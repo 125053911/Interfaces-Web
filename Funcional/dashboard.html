@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Weirdo Comics - Dashboard</title>
+  <link rel="stylesheet" href="funcional.css">
+</head>
+<body>
+<div id="top"></div>
+<div class="layout">
+  <nav id="nav"></nav>
+
+  <main class="contenido">
+    <h2>Dashboard</h2>
+
+    <section class="stats">
+      <div class="stat"><span>Productos</span><strong id="k-prod">0</strong></div>
+      <div class="stat"><span>Stock Total</span><strong id="k-stock">0</strong></div>
+      <div class="stat"><span>Ventas Hoy</span><strong id="k-ventas">$0.00</strong></div>
+      <div class="stat"><span>Pedidos Pendientes</span><strong id="k-pedidos">0</strong></div>
+    </section>
+
+    <h3>Ventas últimos 30 días</h3>
+    <section class="barras" id="grafica"></section>
+
+    <h3>Stock crítico o agotado</h3>
+    <div class="tabla-scroll">
+      <table>
+        <thead><tr><th>Producto</th><th>Stock</th><th>Mínimo</th><th>Estado</th></tr></thead>
+        <tbody id="tb-critico"></tbody>
+      </table>
+    </div>
+
+    <h3 class="seccion">Últimas ventas</h3>
+    <div class="tabla-scroll">
+      <table>
+        <thead><tr><th>Folio</th><th>Fecha</th><th>Total</th><th>Cajero</th><th>Estado</th></tr></thead>
+        <tbody id="tb-ventas"></tbody>
+      </table>
+    </div>
+  </main>
+</div>
+
+<script src="db.js"></script>
+<script>
+  const s = DB.requerirSesion('dashboard.html');
+  DB.layout('dashboard.html', s);
+  const $ = id => document.getElementById(id);
+
+  const productos = DB.all('producto').filter(p => p.estado);
+  const ventas = DB.all('venta');
+  const pedidos = DB.all('pedido');
+  const hoy = DB.fechaHoy();
+
+  $('k-prod').textContent = productos.length;
+  $('k-stock').textContent = productos.reduce((a, p) => a + p.stock, 0).toLocaleString('es-MX');
+  $('k-ventas').textContent = DB.money(ventas.filter(v => v.fecha.startsWith(hoy)).reduce((a, v) => a + v.total, 0));
+  $('k-pedidos').textContent = pedidos.filter(p => p.estado !== 'Recibido').length;
+
+  // Gráfica de los últimos 30 días
+  const dias = [...Array(30)].map((_, i) => {
+    const d = new Date();
+    d.setDate(d.getDate() - (29 - i));
+    return DB.fechaDe(d);
+  });
+  const totales = dias.map(d => ventas.filter(v => v.fecha.startsWith(d)).reduce((a, v) => a + v.total, 0));
+  const max = Math.max(1, ...totales);
+  $('grafica').innerHTML = totales.map((t, i) =>
+    `<div class="barra" title="${dias[i]}: ${DB.money(t)}" style="height:${Math.round(t / max * 100)}%"></div>`
+  ).join('');
+
+  // RN-WEB-011: productos en stock crítico o agotados
+  const criticos = productos.filter(p => p.stock <= p.stock_minimo);
+  $('tb-critico').innerHTML = criticos.length ? criticos.map(p => {
+    const st = DB.estadoStock(p);
+    return `<tr><td>${DB.esc(p.titulo)}</td><td>${p.stock}</td><td>${p.stock_minimo}</td><td><span class="estado ${st.clase}">${st.texto}</span></td></tr>`;
+  }).join('') : '<tr><td colspan="4">Sin productos en stock crítico</td></tr>';
+
+  $('tb-ventas').innerHTML = ventas.slice().reverse().slice(0, 5).map(v =>
+    `<tr><td>${v.folio}</td><td>${v.fecha}</td><td>${DB.money(v.total)}</td><td>${DB.esc(DB.usuarioNombre(v.id_usuario))}</td><td><span class="estado">Completada</span></td></tr>`
+  ).join('') || '<tr><td colspan="5">Sin ventas registradas</td></tr>';
+</script>
+</body>
+</html>

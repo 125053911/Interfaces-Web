@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Weirdo Comics - Productos</title>
+  <link rel="stylesheet" href="funcional.css">
+</head>
+<body>
+<div id="top"></div>
+<div class="layout">
+  <nav id="nav"></nav>
+
+  <main class="contenido">
+    <h2>Gestión de Productos</h2>
+
+    <form class="nuevo" id="form-prod">
+      <h3 id="titulo-form">Nuevo Producto</h3>
+      <div class="grid-form">
+        <div class="campo">
+          <label for="cat">Categoría</label>
+          <select id="cat"></select>
+        </div>
+        <div class="campo">
+          <label for="titulo">Título / Nombre</label>
+          <input id="titulo" placeholder="Nombre del producto">
+        </div>
+        <div class="campo">
+          <label for="autor">Autor / Marca</label>
+          <input id="autor" placeholder="Autor o marca">
+        </div>
+        <div class="campo">
+          <label for="isbn">ISBN / Código de barras</label>
+          <input id="isbn" placeholder="ISBN o código">
+        </div>
+        <div class="campo">
+          <label for="costo">Precio costo</label>
+          <input type="number" id="costo" step="0.01" min="0" placeholder="0.00">
+        </div>
+        <div class="campo">
+          <label for="precio">Precio venta</label>
+          <input type="number" id="precio" step="0.01" min="0" placeholder="0.00">
+        </div>
+        <div class="campo">
+          <label for="stock">Stock inicial</label>
+          <input type="number" id="stock" value="0" min="0">
+        </div>
+        <div class="campo">
+          <label for="min">Stock mínimo</label>
+          <input type="number" id="min" value="3" min="0">
+        </div>
+        <div class="campo">
+          <label for="max">Stock máximo (opcional)</label>
+          <input type="number" id="max" min="0">
+        </div>
+      </div>
+      <div class="acciones-form">
+        <button type="submit" class="btn" id="btn-guardar">Guardar Producto</button>
+        <button type="button" class="btn btn-secundario" id="btn-cancelar">Cancelar</button>
+      </div>
+      <p class="nota" id="nota"></p>
+    </form>
+
+    <div class="buscador">
+      <input id="buscar" placeholder="Buscar por título, autor o ISBN...">
+    </div>
+
+    <div class="tabla-scroll">
+      <table>
+        <thead>
+          <tr><th>ID</th><th>Categoría</th><th>Tipo</th><th>Título</th><th>Autor / Marca</th><th>Precio venta</th><th>Stock</th><th>Estado</th><th>Acciones</th></tr>
+        </thead>
+        <tbody id="tb"></tbody>
+      </table>
+    </div>
+  </main>
+</div>
+
+<script src="db.js"></script>
+<script>
+  const s = DB.requerirSesion('productos.html');
+  DB.layout('productos.html', s);
+  const $ = id => document.getElementById(id);
+  let editId = null;
+
+  function llenarCategorias() {
+    $('cat').innerHTML = DB.all('categoria')
+      .map(c => `<option value="${c.id_categoria}">${DB.esc(c.nombre)} (${DB.esc(c.tipo)})</option>`).join('');
+  }
+
+  function resetForm() {
+    $('form-prod').reset();
+    $('min').value = 3;
+    editId = null;
+    $('titulo-form').textContent = 'Nuevo Producto';
+    $('btn-guardar').textContent = 'Guardar Producto';
+    $('stock').disabled = false;
+    $('nota').textContent = '';
+  }
+
+  function pintar() {
+    const q = $('buscar').value.toLowerCase();
+    const lista = DB.all('producto').filter(p =>
+      [p.titulo, p.autor_marca, p.isbn_codigo].some(v => String(v).toLowerCase().includes(q)));
+    $('tb').innerHTML = lista.map(p => {
+      const cat = DB.get('categoria', p.id_categoria) || {};
+      return `<tr>
+        <td>${p.id_producto}</td><td>${DB.esc(cat.nombre)}</td><td>${DB.esc(cat.tipo)}</td>
+        <td>${DB.esc(p.titulo)}</td><td>${DB.esc(p.autor_marca)}</td>
+        <td>${DB.money(p.precio)}</td><td>${p.stock}</td>
+        <td><span class="estado ${p.estado ? '' : 'gris'}">${p.estado ? 'Habilitado' : 'Inactivo'}</span></td>
+        <td>
+          <button class="btn-editar" data-editar="${p.id_producto}">Editar</button>
+          <button class="btn-eliminar" data-toggle="${p.id_producto}">${p.estado ? 'Inactivar' : 'Activar'}</button>
+        </td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="9">Sin resultados</td></tr>';
+  }
+
+  $('form-prod').addEventListener('submit', e => {
+    e.preventDefault();
+    const v = {
+      id_categoria: Number($('cat').value),
+      titulo: $('titulo').value.trim(),
+      autor_marca: $('autor').value.trim(),
+      isbn_codigo: $('isbn').value.trim(),
+      costo: parseFloat($('costo').value),
+      precio: parseFloat($('precio').value),
+      stock_minimo: parseInt($('min').value, 10),
+      stock_maximo: $('max').value === '' ? null : parseInt($('max').value, 10)
+    };
+    if (!v.id_categoria || !v.titulo || !v.isbn_codigo || isNaN(v.costo) || isNaN(v.precio) || isNaN(v.stock_minimo))
+      return alert('Completa los campos obligatorios.');
+
+    // RN-WEB-021: valores no negativos y límites de inventario
+    if (v.costo < 0 || v.precio < 0 || v.stock_minimo < 0)
+      return alert('RN-WEB-021: costo, precio y stock mínimo no pueden ser negativos.');
+    if (v.stock_maximo !== null && v.stock_maximo < v.stock_minimo)
+      return alert('RN-WEB-021: el stock máximo no puede ser menor que el mínimo.');
+
+    // RN-WEB-005: precio de venta mayor al costo
+    if (v.precio <= v.costo) return alert('RN-WEB-005: el precio de venta debe ser mayor al costo.');
+
+    // RN-WEB-006: código único
+    const otro = p => editId === null || !DB.same(p.id_producto, editId);
+    if (DB.all('producto').some(p => p.isbn_codigo === v.isbn_codigo && otro(p)))
+      return alert('RN-WEB-006: ya existe un producto con ese ISBN o código.');
+
+    if (editId) {
+      DB.update('producto', editId, v);
+    } else {
+      const stockInicial = parseInt($('stock').value, 10);
+      if (isNaN(stockInicial) || stockInicial < 0) return alert('RN-WEB-021: el stock inicial no puede ser negativo.');
+      const p = DB.add('producto', { ...v, stock: stockInicial, estado: true });
+      // RN-WEB-023: movimiento de apertura
+      if (stockInicial > 0) {
+        DB.add('movimiento_inventario', { id_producto: p.id_producto, id_usuario: s.id_usuario, tipo: 'Entrada', cantidad: stockInicial, fecha: DB.ahora(), motivo: 'Apertura de inventario' });
+      }
+    }
+    resetForm();
+    pintar();
+  });
+
+  $('tb').addEventListener('click', e => {
+    const idEditar = e.target.dataset.editar;
+    const idToggle = e.target.dataset.toggle;
+
+    if (idEditar) {
+      const p = DB.get('producto', idEditar);
+      editId = idEditar;
+      $('cat').value = p.id_categoria;
+      $('titulo').value = p.titulo;
+      $('autor').value = p.autor_marca;
+      $('isbn').value = p.isbn_codigo;
+      $('costo').value = p.costo;
+      $('precio').value = p.precio;
+      $('min').value = p.stock_minimo;
+      $('max').value = p.stock_maximo ?? '';
+      $('stock').value = p.stock;
+      $('stock').disabled = true;
+      $('nota').textContent = 'El stock solo se modifica desde Inventario, con movimientos registrados.';
+      $('titulo-form').textContent = 'Editar Producto';
+      $('btn-guardar').textContent = 'Actualizar Producto';
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    if (idToggle) {
+      const p = DB.get('producto', idToggle);
+      DB.update('producto', idToggle, { estado: !p.estado });
+      pintar();
+    }
+  });
+
+  $('btn-cancelar').onclick = resetForm;
+  $('buscar').addEventListener('input', pintar);
+
+  llenarCategorias();
+  resetForm();
+  pintar();
+</script>
+</body>
+</html>

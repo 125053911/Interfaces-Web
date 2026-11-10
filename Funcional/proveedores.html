@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Weirdo Comics - Proveedores</title>
+  <link rel="stylesheet" href="funcional.css">
+</head>
+<body>
+<div id="top"></div>
+<div class="layout">
+  <nav id="nav"></nav>
+
+  <main class="contenido">
+    <h2>Gestión de Proveedores</h2>
+
+    <form class="nuevo" id="form-prov">
+      <h3 id="titulo-form">Nuevo Proveedor</h3>
+      <div class="grid-form">
+        <div class="campo">
+          <label for="empresa">Nombre de empresa</label>
+          <input id="empresa" placeholder="Razón social">
+        </div>
+        <div class="campo">
+          <label for="rfc">RFC</label>
+          <input id="rfc" placeholder="12 o 13 caracteres" maxlength="13">
+        </div>
+        <div class="campo">
+          <label for="contacto">Contacto (representante)</label>
+          <input id="contacto" placeholder="Nombre del vendedor">
+        </div>
+        <div class="campo">
+          <label for="telefono">Teléfono</label>
+          <input id="telefono" placeholder="5551234567">
+        </div>
+        <div class="campo">
+          <label for="email">Correo electrónico</label>
+          <input type="email" id="email" placeholder="correo@proveedor.com">
+        </div>
+        <div class="campo completo">
+          <label for="terminos">Términos comerciales</label>
+          <textarea id="terminos" placeholder="Crédito, tiempos de entrega..." maxlength="200"></textarea>
+        </div>
+      </div>
+      <div class="acciones-form">
+        <button type="submit" class="btn" id="btn-guardar">Guardar Proveedor</button>
+        <button type="button" class="btn btn-secundario" id="btn-cancelar">Cancelar</button>
+      </div>
+    </form>
+
+    <div class="buscador">
+      <input id="buscar" placeholder="Buscar por empresa, RFC o correo...">
+    </div>
+
+    <div class="tabla-scroll">
+      <table>
+        <thead>
+          <tr><th>Empresa</th><th>RFC</th><th>Contacto</th><th>Teléfono</th><th>Correo</th><th>Términos</th><th>Estado</th><th>Acciones</th></tr>
+        </thead>
+        <tbody id="tb"></tbody>
+      </table>
+    </div>
+  </main>
+</div>
+
+<script src="db.js"></script>
+<script>
+  const s = DB.requerirSesion('proveedores.html');
+  DB.layout('proveedores.html', s);
+  const $ = id => document.getElementById(id);
+  const CAMPOS = ['empresa', 'rfc', 'contacto', 'telefono', 'email', 'terminos'];
+  let editId = null;
+
+  function resetForm() {
+    $('form-prov').reset();
+    editId = null;
+    $('titulo-form').textContent = 'Nuevo Proveedor';
+    $('btn-guardar').textContent = 'Guardar Proveedor';
+  }
+
+  function pintar() {
+    const q = $('buscar').value.toLowerCase();
+    const lista = DB.all('proveedor').filter(p =>
+      [p.empresa, p.rfc, p.email].some(v => String(v).toLowerCase().includes(q)));
+    $('tb').innerHTML = lista.map(p => `
+      <tr>
+        <td>${DB.esc(p.empresa)}</td><td>${DB.esc(p.rfc)}</td><td>${DB.esc(p.contacto)}</td>
+        <td>${DB.esc(p.telefono)}</td><td>${DB.esc(p.email)}</td><td>${DB.esc(p.terminos)}</td>
+        <td><span class="estado ${p.estado ? '' : 'gris'}">${p.estado ? 'Activo' : 'Inactivo'}</span></td>
+        <td>
+          <button class="btn-editar" data-editar="${p.id_proveedor}">Editar</button>
+          <button class="btn-eliminar" data-toggle="${p.id_proveedor}">${p.estado ? 'Inactivar' : 'Activar'}</button>
+        </td>
+      </tr>`).join('') || '<tr><td colspan="8">Sin resultados</td></tr>';
+  }
+
+  $('form-prov').addEventListener('submit', e => {
+    e.preventDefault();
+    const v = {};
+    CAMPOS.forEach(c => v[c] = $(c).value.trim());
+    v.rfc = v.rfc.toUpperCase();
+
+    // RN-WEB-016: contacto obligatorio con formato válido
+    if (!v.empresa || !v.rfc || !v.contacto || !v.telefono || !v.email)
+      return alert('Completa los campos obligatorios.');
+    if (!DB.telefonoValido(v.telefono)) return alert('RN-WEB-016: el teléfono no tiene un formato válido.');
+    if (!DB.correoValido(v.email)) return alert('RN-WEB-016: el correo no tiene un formato válido.');
+    if (!DB.rfcValido(v.rfc)) return alert('El RFC debe tener entre 12 y 13 caracteres alfanuméricos.');
+
+    const otro = p => editId === null || !DB.same(p.id_proveedor, editId);
+    if (DB.all('proveedor').some(p => p.rfc === v.rfc && otro(p)))
+      return alert('Ya existe un proveedor con ese RFC.');
+
+    if (editId) DB.update('proveedor', editId, { ...v, terminos: v.terminos });
+    else DB.add('proveedor', { ...v, estado: true });
+
+    resetForm();
+    pintar();
+  });
+
+  $('tb').addEventListener('click', e => {
+    const idEditar = e.target.dataset.editar;
+    const idToggle = e.target.dataset.toggle;
+
+    if (idEditar) {
+      const p = DB.get('proveedor', idEditar);
+      editId = idEditar;
+      CAMPOS.forEach(c => $(c).value = p[c] ?? '');
+      $('titulo-form').textContent = 'Editar Proveedor';
+      $('btn-guardar').textContent = 'Actualizar Proveedor';
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    // RN-WEB-015: baja lógica; el registro y su historial se conservan
+    if (idToggle) {
+      const p = DB.get('proveedor', idToggle);
+      DB.update('proveedor', idToggle, { estado: !p.estado });
+      pintar();
+    }
+  });
+
+  $('btn-cancelar').onclick = resetForm;
+  $('buscar').addEventListener('input', pintar);
+  pintar();
+</script>
+</body>
+</html>

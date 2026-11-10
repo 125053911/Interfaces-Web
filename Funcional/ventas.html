@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Weirdo Comics - Nueva Venta</title>
+  <link rel="stylesheet" href="funcional.css">
+</head>
+<body>
+<div id="top"></div>
+<div class="layout">
+  <nav id="nav"></nav>
+
+  <main class="contenido">
+    <h2>Nueva Venta</h2>
+
+    <div class="buscador">
+      <input id="buscar-prod" placeholder="Buscar producto por título o ISBN...">
+    </div>
+    <div class="buscador">
+      <select id="prod"></select>
+      <input type="number" id="cant" class="corto" value="1" min="1">
+      <button type="button" class="btn" id="btn-agregar">Agregar</button>
+    </div>
+
+    <div class="tabla-scroll">
+      <table>
+        <thead>
+          <tr><th>Producto</th><th>Tipo</th><th>Precio</th><th>Cantidad</th><th>Importe</th><th>Acción</th></tr>
+        </thead>
+        <tbody id="tb"></tbody>
+      </table>
+    </div>
+
+    <div class="grid-form seccion">
+      <div class="campo">
+        <label for="pago">Forma de pago</label>
+        <select id="pago"><option>Efectivo</option><option>Tarjeta</option><option>Transferencia</option></select>
+      </div>
+      <div class="campo">
+        <label for="monto">Monto pagado</label>
+        <input type="number" id="monto" min="0" step="0.01" placeholder="0.00">
+      </div>
+      <div class="total-box completo">
+        <div class="fila"><span>Subtotal</span><span id="subtotal">$0.00</span></div>
+        <div class="fila"><span>Descuento</span><span id="descuento">$0.00</span></div>
+        <div class="fila"><span>IVA (16%)</span><span id="iva">$0.00</span></div>
+        <div class="fila gran"><span>Total</span><span id="total">$0.00</span></div>
+        <div class="fila"><span>Cambio</span><span id="cambio">$0.00</span></div>
+        <div class="nota" id="nota-desc"></div>
+      </div>
+    </div>
+
+    <div class="acciones-form">
+      <button type="button" class="btn btn-ok" id="btn-completar">Completar Venta</button>
+      <button type="button" class="btn btn-secundario" id="btn-cancelar">Cancelar venta</button>
+      <button type="button" class="btn btn-secundario no-imprimir" id="btn-imprimir">Imprimir último ticket</button>
+    </div>
+
+    <div id="ticket" class="ticket imprimible oculto"></div>
+  </main>
+</div>
+
+<script src="db.js"></script>
+<script>
+  const s = DB.requerirSesion('ventas.html');
+  DB.layout('ventas.html', s);
+  const $ = id => document.getElementById(id);
+
+  let carrito = [];   // [{ id_producto, cantidad }]
+  let ultimoTicket = '';
+
+  const enCarrito = id => (carrito.find(i => DB.same(i.id_producto, id)) || { cantidad: 0 }).cantidad;
+
+  // Líneas con precio y tipo vigentes del catálogo
+  function lineas() {
+    return carrito.map(i => {
+      const p = DB.get('producto', i.id_producto);
+      return { id_producto: p.id_producto, titulo: p.titulo, tipo: DB.tipoProducto(p), precio: p.precio, cantidad: i.cantidad };
+    });
+  }
+
+  function llenarProductos() {
+    const q = $('buscar-prod').value.toLowerCase();
+    const actual = $('prod').value;
+    const disponibles = DB.all('producto').filter(p =>
+      p.estado && p.stock - enCarrito(p.id_producto) > 0 &&
+      [p.titulo, p.isbn_codigo].some(v => String(v).toLowerCase().includes(q)));
+    $('prod').innerHTML = disponibles.map(p =>
+      `<option value="${p.id_producto}">${DB.esc(p.titulo)} - ${DB.money(p.precio)} (disp: ${p.stock - enCarrito(p.id_producto)})</option>`).join('');
+    if (disponibles.some(p => DB.same(p.id_producto, actual))) $('prod').value = actual;
+  }
+
+  function calcularCambio() {
+    const pagado = parseFloat($('monto').value) || 0;
+    const t = DB.calcularVenta(lineas());
+    $('cambio').textContent = DB.money(Math.max(0, pagado - t.total));
+  }
+
+  function pintar() {
+    const ls = lineas();
+    $('tb').innerHTML = ls.map(l => `
+      <tr>
+        <td>${DB.esc(l.titulo)}</td><td>${DB.esc(l.tipo)}</td><td>${DB.money(l.precio)}</td><td>${l.cantidad}</td>
+        <td>${DB.money(l.cantidad * l.precio)}</td>
+        <td><button class="btn-eliminar" data-quitar="${l.id_producto}">Quitar</button></td>
+      </tr>`).join('') || '<tr><td colspan="6">El carrito está vacío</td></tr>';
+
+    const t = DB.calcularVenta(ls);
+    $('subtotal').textContent = DB.money(t.subtotal);
+    $('descuento').textContent = DB.money(t.descuento);
+    $('iva').textContent = DB.money(t.impuestos);
+    $('total').textContent = DB.money(t.total);
+    $('nota-desc').textContent = t.descuento > 0 ? 'Aplicado: 10% sobre cómics por llevar 5 o más (RN-WEB-008).' : '';
+    calcularCambio();
+    llenarProductos();
+  }
+
+  $('btn-agregar').onclick = () => {
+    const p = DB.get('producto', $('prod').value);
+    const cant = parseInt($('cant').value, 10);
+    if (!p) return alert('Selecciona un producto.');
+    if (!(cant > 0)) return alert('La cantidad debe ser mayor a cero.');
+    const disp = p.stock - enCarrito(p.id_producto);
+    // RN-WEB-007
+    if (cant > disp) return alert(`RN-WEB-007: solo hay ${disp} unidad(es) disponibles de este producto.`);
+
+    const linea = carrito.find(i => DB.same(i.id_producto, p.id_producto));
+    if (linea) linea.cantidad += cant;
+    else carrito.push({ id_producto: p.id_producto, cantidad: cant });
+    $('cant').value = 1;
+    pintar();
+  };
+
+  $('tb').addEventListener('click', e => {
+    const id = e.target.dataset.quitar;
+    if (!id) return;
+    carrito = carrito.filter(i => !DB.same(i.id_producto, id));
+    pintar();
+  });
+
+  $('monto').addEventListener('input', calcularCambio);
+  $('buscar-prod').addEventListener('input', llenarProductos);
+
+  $('btn-cancelar').onclick = () => {
+    carrito = [];
+    $('monto').value = '';
+    pintar();
+  };
+
+  $('btn-completar').onclick = () => {
+    if (!carrito.length) return alert('Agrega productos al carrito.');
+    const ls = lineas();
+    const t = DB.calcularVenta(ls);
+    const pagado = parseFloat($('monto').value);
+    if (isNaN(pagado) || pagado < t.total) return alert('El monto pagado no cubre el total.');
+
+    // RN-WEB-007: revalidar existencias al confirmar
+    const catalogo = DB.all('producto');
+    for (const i of carrito) {
+      const p = catalogo.find(x => DB.same(x.id_producto, i.id_producto));
+      if (!p || !p.estado || i.cantidad > p.stock)
+        return alert(`RN-WEB-007: existencias insuficientes para ${p ? p.titulo : 'un producto'}.`);
+    }
+
+    // RN-WEB-010: descontar existencias y registrar salidas
+    const fecha = DB.ahora();
+    const folio = DB.folioSiguiente();
+    const venta = DB.add('venta', {
+      id_usuario: s.id_usuario, folio, fecha,
+      subtotal: t.subtotal, descuento: t.descuento, impuestos: t.impuestos, total: t.total,
+      forma_pago: $('pago').value, monto_pagado: pagado
+    });
+
+    DB.save('producto', catalogo.map(p => {
+      const i = carrito.find(x => DB.same(x.id_producto, p.id_producto));
+      return i ? { ...p, stock: p.stock - i.cantidad } : p;
+    }));
+    ls.forEach(l => {
+      DB.add('detalle_venta', { id_venta: venta.id_venta, id_producto: l.id_producto, cantidad: l.cantidad, precio_unitario: l.precio });
+      DB.add('movimiento_inventario', { id_producto: l.id_producto, id_usuario: s.id_usuario, tipo: 'Salida', cantidad: l.cantidad, fecha, motivo: `Venta ${folio}` });
+    });
+
+    ultimoTicket = `
+      <div style="text-align:center"><strong>WEIRDO COMICS</strong><br>Ticket ${folio}<br>${fecha}<br>Atendió: ${DB.esc(s.nombre)}</div>
+      <hr>${ls.map(l => `<div class="linea"><span>${DB.esc(l.titulo)} x${l.cantidad}</span><span>${DB.money(l.cantidad * l.precio)}</span></div>`).join('')}
+      <hr>
+      <div class="linea"><span>Subtotal</span><span>${DB.money(t.subtotal)}</span></div>
+      <div class="linea"><span>Descuento</span><span>${DB.money(t.descuento)}</span></div>
+      <div class="linea"><span>IVA (16%)</span><span>${DB.money(t.impuestos)}</span></div>
+      <div class="linea"><strong>Total</strong><strong>${DB.money(t.total)}</strong></div>
+      <div class="linea"><span>Pago (${DB.esc(venta.forma_pago)})</span><span>${DB.money(pagado)}</span></div>
+      <div class="linea"><span>Cambio</span><span>${DB.money(pagado - t.total)}</span></div>`;
+    $('ticket').innerHTML = ultimoTicket;
+    $('ticket').classList.remove('oculto');
+
+    carrito = [];
+    $('monto').value = '';
+    pintar();
+  };
+
+  $('btn-imprimir').onclick = () => {
+    if (!ultimoTicket) return alert('Aún no hay un ticket para imprimir.');
+    window.print();
+  };
+
+  pintar();
+</script>
+</body>
+</html>

@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Weirdo Comics - Login</title>
+  <link rel="stylesheet" href="funcional.css">
+</head>
+<body class="login-body">
+
+  <div class="login-card">
+    <h1>WEIRDO COMICS</h1>
+    <div class="sub">Sistema de Gestión</div>
+
+    <form id="form-login">
+      <div class="campo">
+        <label for="correo">Correo electrónico</label>
+        <input type="email" id="correo" placeholder="usuario@weirdo.com" required>
+      </div>
+      <div class="campo">
+        <label for="pass">Contraseña</label>
+        <input type="password" id="pass" placeholder="••••••••" required>
+      </div>
+      <p class="msg-error" id="error"></p>
+      <button type="submit" class="btn btn-block">Iniciar Sesión</button>
+    </form>
+
+    <div class="enlace">¿Olvidaste tu contraseña? <a href="#" id="recuperar">Recuperar</a></div>
+    <div class="demo">Demo: ivan@weirdo.com / 12345678</div>
+  </div>
+
+<script src="db.js"></script>
+<script>
+  const $ = id => document.getElementById(id);
+
+  $('recuperar').onclick = e => {
+    e.preventDefault();
+    alert('Solicita la recuperación al administrador del sistema.');
+  };
+
+  $('form-login').addEventListener('submit', async e => {
+    e.preventDefault();
+    $('error').textContent = '';
+    const res = await DB.login($('correo').value, $('pass').value);
+    if (res.error) { $('error').textContent = res.error; return; }
+
+    const u = res.usuario;
+    if (u.requiere_cambio_clave) {  // RN-WEB-004: no se entra hasta cambiar la temporal
+      let nueva;
+      do {
+        nueva = prompt('Tu contraseña es temporal. Crea una nueva (mínimo 8 caracteres):');
+        if (nueva === null) return;
+      } while (nueva.length < 8);
+      await DB.cambiarClave(u.id_usuario, nueva);
+    }
+    DB.iniciarSesion(u);
+    location.href = 'dashboard.html';
+  });
+</script>
+</body>
+</html>

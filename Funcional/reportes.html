@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Weirdo Comics - Reportes</title>
+  <link rel="stylesheet" href="funcional.css">
+</head>
+<body>
+<div id="top"></div>
+<div class="layout">
+  <nav id="nav"></nav>
+
+  <main class="contenido">
+    <h2>Reportes</h2>
+
+    <form class="nuevo no-imprimir" id="form-rep">
+      <div class="grid-form">
+        <div class="campo">
+          <label for="tipo">Tipo de reporte</label>
+          <select id="tipo">
+            <option>Ventas</option><option>Pedidos</option><option>Proveedores</option><option>Inventario</option>
+          </select>
+        </div>
+        <div class="campo">
+          <label for="inicio">Fecha inicio</label>
+          <input type="date" id="inicio">
+        </div>
+        <div class="campo">
+          <label for="fin">Fecha fin</label>
+          <input type="date" id="fin">
+        </div>
+      </div>
+      <div class="acciones-form">
+        <button type="submit" class="btn">Generar</button>
+        <button type="button" class="btn btn-secundario" id="btn-pdf">Imprimir / PDF</button>
+        <button type="button" class="btn btn-secundario" id="btn-excel">Descargar Excel (CSV)</button>
+      </div>
+      <p class="msg-error" id="error"></p>
+    </form>
+
+    <div id="reporte" class="imprimible oculto">
+      <h3 id="rep-titulo"></h3>
+      <section class="barras" id="grafica"></section>
+      <div class="tabla-scroll">
+        <table>
+          <thead id="rep-head"></thead>
+          <tbody id="rep-body"></tbody>
+          <tfoot id="rep-foot"></tfoot>
+        </table>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="db.js"></script>
+<script>
+  const s = DB.requerirSesion('reportes.html');
+  DB.layout('reportes.html', s);
+  const $ = id => document.getElementById(id);
+  let ultimo = null;
+
+  $('inicio').value = DB.fechaHoy().slice(0, 8) + '01';
+  $('fin').value = DB.fechaHoy();
+
+  const enRango = fecha => {
+    const d = String(fecha).slice(0, 10);
+    return d >= $('inicio').value && d <= $('fin').value;
+  };
+
+  function construir() {
+    const tipo = $('tipo').value;
+
+    if (tipo === 'Ventas') {
+      const ventas = DB.all('venta').filter(v => enRango(v.fecha));
+      const detalles = DB.all('detalle_venta').filter(d => ventas.some(v => DB.same(v.id_venta, d.id_venta)));
+      const porDia = {};
+      ventas.forEach(v => { const d = v.fecha.slice(0, 10); porDia[d] = (porDia[d] || 0) + v.total; });
+      const suma = k => ventas.reduce((a, v) => a + v[k], 0);
+      return {
+        titulo: 'Reporte de ventas',
+        head: ['Fecha', 'Folio', 'Producto', 'Cantidad', 'Precio unit.', 'Importe', 'Cajero'],
+        filas: detalles.map(d => {
+          const v = ventas.find(x => DB.same(x.id_venta, d.id_venta));
+          return [v.fecha, v.folio, DB.productoNombre(d.id_producto), d.cantidad,
+            DB.money(d.precio_unitario), DB.money(d.cantidad * d.precio_unitario), DB.usuarioNombre(v.id_usuario)];
+        }),
+        pie: `Subtotal: ${DB.money(suma('subtotal'))} | Descuentos: ${DB.money(suma('descuento'))} | IVA: ${DB.money(suma('impuestos'))} | Total: ${DB.money(suma('total'))}`,
+        barras: Object.keys(porDia).sort().map(d => ({ etiqueta: d, valor: porDia[d] }))
+      };
+    }
+
+    if (tipo === 'Pedidos') {
+      const pedidos = DB.all('pedido').filter(p => enRango(p.fecha_solicitud));
+      const det = DB.all('detalle_pedido');
+      // RN-WEB-019: costos históricos del pedido, no del catálogo
+      const filas = pedidos.flatMap(p => det.filter(d => DB.same(d.id_pedido, p.id_pedido)).map(d => [
+        p.fecha_solicitud, p.id_pedido, DB.proveedorNombre(p.id_proveedor), DB.productoNombre(d.id_producto),
+        d.cantidad, DB.money(d.costo_unitario), DB.money(d.cantidad * d.costo_unitario), p.estado
+      ]));
+      return {
+        titulo: 'Reporte de pedidos',
+        head: ['Fecha solicitud', 'Pedido', 'Proveedor', 'Producto', 'Cantidad', 'Costo unit.', 'Total', 'Estado'],
+        filas, pie: `Pedidos en el periodo: ${pedidos.length}`, barras: null
+      };
+    }
+
+    if (tipo === 'Proveedores') {
+      const pedidos = DB.all('pedido').filter(p => enRango(p.fecha_solicitud));
+      const det = DB.all('detalle_pedido');
+      const filas = DB.all('proveedor').map(pv => {
+        const ps = pedidos.filter(p => DB.same(p.id_proveedor, pv.id_proveedor));
+        const total = ps.reduce((a, p) => a + det.filter(d => DB.same(d.id_pedido, p.id_pedido))
+          .reduce((b, d) => b + d.cantidad * d.costo_unitario, 0), 0);
+        return [pv.id_proveedor, pv.empresa, pv.rfc, ps.length, DB.money(total), pv.estado ? 'Activo' : 'Inactivo'];
+      });
+      return {
+        titulo: 'Reporte de proveedores (compras del periodo)',
+        head: ['ID', 'Empresa', 'RFC', 'Pedidos', 'Total comprado', 'Estado'],
+        filas, pie: `Pedidos en el periodo: ${pedidos.length}`, barras: null
+      };
+    }
+
+    // Inventario: existencias actuales (no depende del periodo)
+    return {
+      titulo: 'Reporte de inventario (existencias actuales)',
+      head: ['ID', 'Producto', 'Stock', 'Mínimo', 'Máximo', 'Estado'],
+      filas: DB.all('producto').map(p => [p.id_producto, p.titulo, p.stock, p.stock_minimo, p.stock_maximo ?? '—', DB.estadoStock(p).texto]),
+      pie: 'Corte al momento de la consulta; no depende del periodo.', barras: null
+    };
+  }
+
+  function render(r) {
+    $('rep-titulo').textContent = r.titulo;
+    $('rep-head').innerHTML = `<tr>${r.head.map(h => `<th>${h}</th>`).join('')}</tr>`;
+    $('rep-body').innerHTML = r.filas.length
+      ? r.filas.map(f => `<tr>${f.map(c => `<td>${DB.esc(c)}</td>`).join('')}</tr>`).join('')
+      : `<tr><td colspan="${r.head.length}">No se encontraron transacciones en las fechas seleccionadas.</td></tr>`;
+    $('rep-foot').innerHTML = r.pie ? `<tr><td colspan="${r.head.length}">${DB.esc(r.pie)}</td></tr>` : '';
+
+    if (r.barras && r.barras.length) {
+      const max = Math.max(1, ...r.barras.map(b => b.valor));
+      $('grafica').innerHTML = r.barras.map(b =>
+        `<div class="barra" title="${b.etiqueta}: ${DB.money(b.valor)}" style="height:${Math.round(b.valor / max * 100)}%"></div>`).join('');
+      $('grafica').classList.remove('oculto');
+    } else {
+      $('grafica').classList.add('oculto');
+    }
+    $('reporte').classList.remove('oculto');
+  }
+
+  $('form-rep').addEventListener('submit', e => {
+    e.preventDefault();
+    $('error').textContent = '';
+    if (!$('inicio').value || !$('fin').value) return $('error').textContent = 'Selecciona el rango de fechas.';
+    // RN-WEB-018
+    if ($('inicio').value > $('fin').value)
+      return $('error').textContent = 'RN-WEB-018: la fecha inicial no puede ser posterior a la fecha final.';
+    ultimo = construir();
+    render(ultimo);
+  });
+
+  $('btn-excel').onclick = () => {
+    if (!ultimo) return alert('Primero genera un reporte.');
+    DB.descargar(`reporte-${$('tipo').value.toLowerCase()}.csv`, [ultimo.head, ...ultimo.filas]);
+  };
+
+  $('btn-pdf').onclick = () => {
+    if (!ultimo) return alert('Primero genera un reporte.');
+    window.print();
+  };
+</script>
+</body>
+</html>

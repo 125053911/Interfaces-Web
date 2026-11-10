@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Weirdo Comics - Inventario</title>
+  <link rel="stylesheet" href="funcional.css">
+</head>
+<body>
+<div id="top"></div>
+<div class="layout">
+  <nav id="nav"></nav>
+
+  <main class="contenido">
+    <h2>Control de Inventario</h2>
+
+    <div class="alerta oculto" id="alerta"></div>
+
+    <div class="buscador">
+      <input id="buscar" placeholder="Buscar producto...">
+      <button type="button" class="btn btn-secundario" id="btn-bajo">Stock crítico</button>
+      <button type="button" class="btn btn-secundario" id="btn-exportar">Exportar inventario</button>
+    </div>
+
+    <div class="tabla-scroll">
+      <table>
+        <thead>
+          <tr><th>Producto</th><th>Stock actual</th><th>Mínimo</th><th>Máximo</th><th>Estado</th><th>Último movimiento</th><th>Acciones</th></tr>
+        </thead>
+        <tbody id="tb"></tbody>
+      </table>
+    </div>
+
+    <form class="nuevo seccion" id="form-ajuste">
+      <div id="seccion-ajuste">
+        <h3>Movimiento de inventario</h3>
+        <div class="grid-form">
+          <div class="campo">
+            <label for="prod">Producto</label>
+            <select id="prod"></select>
+          </div>
+          <div class="campo">
+            <label for="tipo">Tipo</label>
+            <select id="tipo">
+              <option>Entrada</option>
+              <option>Salida</option>
+              <option>Ajuste</option>
+            </select>
+          </div>
+          <div class="campo">
+            <label for="cant">Cantidad (en Ajuste puede ser negativa)</label>
+            <input type="number" id="cant" value="1">
+          </div>
+          <div class="campo completo">
+            <label for="motivo">Motivo</label>
+            <textarea id="motivo" placeholder="Motivo del movimiento"></textarea>
+          </div>
+        </div>
+        <div class="acciones-form">
+          <button type="submit" class="btn">Registrar movimiento</button>
+        </div>
+      </div>
+    </form>
+
+    <h3 class="seccion">Últimos movimientos</h3>
+    <div class="tabla-scroll">
+      <table>
+        <thead>
+          <tr><th>Fecha</th><th>Producto</th><th>Tipo</th><th>Cantidad</th><th>Usuario</th><th>Motivo</th></tr>
+        </thead>
+        <tbody id="tb-mov"></tbody>
+      </table>
+    </div>
+  </main>
+</div>
+
+<script src="db.js"></script>
+<script>
+  const s = DB.requerirSesion('inventario.html');
+  DB.layout('inventario.html', s);
+  const $ = id => document.getElementById(id);
+
+  const puedeAjustar = s.rol !== 'Cajero';   // el cajero solo consulta
+  let soloCriticos = false;
+  if (!puedeAjustar) $('seccion-ajuste').classList.add('oculto');
+
+  function llenarProductos() {
+    const actual = $('prod').value;
+    $('prod').innerHTML = DB.all('producto').filter(p => p.estado)
+      .map(p => `<option value="${p.id_producto}">${DB.esc(p.titulo)} (stock: ${p.stock})</option>`).join('');
+    if (actual) $('prod').value = actual;
+  }
+
+  function ultimoMovimiento(id) {
+    const movs = DB.all('movimiento_inventario').filter(m => DB.same(m.id_producto, id));
+    return movs.length ? movs[movs.length - 1].fecha : '—';
+  }
+
+  function pintar() {
+    const q = $('buscar').value.toLowerCase();
+    let lista = DB.all('producto').filter(p => p.estado && p.titulo.toLowerCase().includes(q));
+    if (soloCriticos) lista = lista.filter(p => p.stock <= p.stock_minimo);
+
+    $('tb').innerHTML = lista.map(p => {
+      const st = DB.estadoStock(p);
+      const accion = puedeAjustar ? `<button class="btn-editar" data-ajustar="${p.id_producto}">Ajustar</button>` : '—';
+      return `<tr>
+        <td>${DB.esc(p.titulo)}</td><td>${p.stock}</td><td>${p.stock_minimo}</td><td>${p.stock_maximo ?? '—'}</td>
+        <td><span class="estado ${st.clase}">${st.texto}</span></td>
+        <td>${ultimoMovimiento(p.id_producto)}</td>
+        <td>${accion}</td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="7">Sin resultados</td></tr>';
+
+    // RN-WEB-011: aviso de críticos
+    const criticos = DB.all('producto').filter(p => p.estado && p.stock <= p.stock_minimo).length;
+    $('alerta').textContent = `⚠ Hay ${criticos} producto(s) en stock crítico o agotado.`;
+    $('alerta').classList.toggle('oculto', criticos === 0);
+    $('btn-bajo').textContent = soloCriticos ? 'Ver todos' : 'Stock crítico';
+
+    $('tb-mov').innerHTML = DB.all('movimiento_inventario').slice().reverse().slice(0, 10).map(m =>
+      `<tr><td>${m.fecha}</td><td>${DB.esc(DB.productoNombre(m.id_producto))}</td><td>${m.tipo}</td><td>${m.cantidad}</td><td>${DB.esc(DB.usuarioNombre(m.id_usuario))}</td><td>${DB.esc(m.motivo)}</td></tr>`
+    ).join('') || '<tr><td colspan="6">Sin movimientos</td></tr>';
+  }
+
+  $('tb').addEventListener('click', e => {
+    const id = e.target.dataset.ajustar;
+    if (!id) return;
+    $('prod').value = id;
+    $('cant').focus();
+  });
+
+  $('form-ajuste').addEventListener('submit', e => {
+    e.preventDefault();
+    if (!puedeAjustar) return;
+    const p = DB.get('producto', $('prod').value);
+    const tipo = $('tipo').value;
+    const cant = parseInt($('cant').value, 10);
+    const motivo = $('motivo').value.trim();
+
+    if (!p) return alert('Selecciona un producto.');
+    if (isNaN(cant)) return alert('Ingresa una cantidad.');
+    if (!motivo) return alert('RN-WEB-012: escribe el motivo del movimiento.');
+
+    let delta;
+    if (tipo === 'Entrada' || tipo === 'Salida') {
+      if (cant <= 0) return alert('La cantidad debe ser mayor a cero.');
+      delta = tipo === 'Entrada' ? cant : -cant;
+    } else {
+      if (cant === 0) return alert('El ajuste no puede ser cero.');
+      delta = cant;   // en Ajuste puede ser negativo
+    }
+
+    // RN-WEB-012: no se permiten existencias negativas
+    const nuevo = p.stock + delta;
+    if (nuevo < 0) return alert(`RN-WEB-012: el movimiento dejaría existencias negativas (stock actual: ${p.stock}).`);
+
+    DB.update('producto', p.id_producto, { stock: nuevo });
+    DB.add('movimiento_inventario', {
+      id_producto: p.id_producto, id_usuario: s.id_usuario, tipo,
+      cantidad: tipo === 'Ajuste' ? delta : cant, fecha: DB.ahora(), motivo
+    });
+
+    e.target.reset();
+    llenarProductos();
+    pintar();
+  });
+
+  $('buscar').addEventListener('input', pintar);
+  $('btn-bajo').onclick = () => { soloCriticos = !soloCriticos; pintar(); };
+  $('btn-exportar').onclick = () => DB.descargar('inventario.csv', [
+    ['ID', 'Producto', 'Stock', 'Mínimo', 'Máximo', 'Estado'],
+    ...DB.all('producto').map(p => [p.id_producto, p.titulo, p.stock, p.stock_minimo, p.stock_maximo ?? '', DB.estadoStock(p).texto])
+  ]);
+
+  llenarProductos();
+  pintar();
+</script>
+</body>
+</html>

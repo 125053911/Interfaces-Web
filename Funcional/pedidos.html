@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Weirdo Comics - Pedidos</title>
+  <link rel="stylesheet" href="funcional.css">
+</head>
+<body>
+<div id="top"></div>
+<div class="layout">
+  <nav id="nav"></nav>
+
+  <main class="contenido">
+    <h2>Gestión de Pedidos</h2>
+
+    <form class="nuevo" id="form-ped">
+      <h3>Nuevo Pedido</h3>
+      <div class="grid-form">
+        <div class="campo">
+          <label for="prov">Proveedor (activos)</label>
+          <select id="prov"></select>
+        </div>
+        <div class="campo">
+          <label for="prod">Producto</label>
+          <select id="prod"></select>
+        </div>
+        <div class="campo">
+          <label for="cant">Cantidad</label>
+          <input type="number" id="cant" min="1" value="1">
+        </div>
+        <div class="campo">
+          <label for="costo">Costo unitario</label>
+          <input type="number" id="costo" step="0.01" min="0" placeholder="0.00">
+        </div>
+        <div class="campo">
+          <label for="entrega">Fecha de entrega esperada</label>
+          <input type="date" id="entrega">
+        </div>
+      </div>
+      <div class="acciones-form">
+        <button type="submit" class="btn">Crear Pedido</button>
+        <button type="button" class="btn btn-secundario" id="btn-cancelar">Cancelar</button>
+      </div>
+    </form>
+
+    <div class="buscador">
+      <input id="buscar" placeholder="Buscar por proveedor o producto...">
+    </div>
+
+    <div class="tabla-scroll">
+      <table>
+        <thead>
+          <tr><th>ID</th><th>Proveedor</th><th>Producto</th><th>Cant.</th><th>Costo unit.</th><th>Total</th><th>Solicitud</th><th>Entrega esperada</th><th>Recepción</th><th>Estado</th><th>Acciones</th></tr>
+        </thead>
+        <tbody id="tb"></tbody>
+      </table>
+    </div>
+  </main>
+</div>
+
+<script src="db.js"></script>
+<script>
+  const s = DB.requerirSesion('pedidos.html');
+  DB.layout('pedidos.html', s);
+  const $ = id => document.getElementById(id);
+
+  function llenarSelects() {
+    const pv = $('prov').value, pr = $('prod').value;
+    // RN-WEB-017: solo proveedores activos
+    $('prov').innerHTML = DB.all('proveedor').filter(p => p.estado)
+      .map(p => `<option value="${p.id_proveedor}">${DB.esc(p.empresa)}</option>`).join('');
+    $('prod').innerHTML = DB.all('producto').filter(p => p.estado)
+      .map(p => `<option value="${p.id_producto}">${DB.esc(p.titulo)}</option>`).join('');
+    if (pv) $('prov').value = pv;
+    if (pr) $('prod').value = pr;
+  }
+
+  function pintar() {
+    const q = $('buscar').value.toLowerCase();
+    const det = DB.all('detalle_pedido');
+    const filas = DB.all('pedido').slice().reverse().map(p => {
+      const lineas = det.filter(d => DB.same(d.id_pedido, p.id_pedido));
+      return { p, lineas, total: lineas.reduce((a, d) => a + d.cantidad * d.costo_unitario, 0) };
+    }).filter(x => (DB.proveedorNombre(x.p.id_proveedor) + ' ' + x.lineas.map(d => DB.productoNombre(d.id_producto)).join(' '))
+      .toLowerCase().includes(q));
+
+    $('tb').innerHTML = filas.map(({ p, lineas, total }) => {
+      const clase = p.estado === 'Recibido' ? '' : p.estado === 'Enviado' ? 'info' : 'gris';
+      let accion = '';
+      if (p.estado === 'Creado') accion = `<button class="btn btn-sm" data-enviar="${p.id_pedido}">Marcar enviado</button>`;
+      if (p.estado === 'Enviado') accion = `<button class="btn btn-ok" data-recibir="${p.id_pedido}">Confirmar recepción</button>`;
+      return `<tr>
+        <td>${p.id_pedido}</td>
+        <td>${DB.esc(DB.proveedorNombre(p.id_proveedor))}</td>
+        <td>${lineas.map(d => DB.esc(DB.productoNombre(d.id_producto))).join(', ')}</td>
+        <td>${lineas.map(d => d.cantidad).join(', ')}</td>
+        <td>${lineas.map(d => DB.money(d.costo_unitario)).join(', ')}</td>
+        <td>${DB.money(total)}</td>
+        <td>${p.fecha_solicitud}</td>
+        <td>${p.fecha_entrega_esperada || '—'}</td>
+        <td>${p.fecha_recepcion || '—'}</td>
+        <td><span class="estado ${clase}">${p.estado}</span></td>
+        <td>${accion}</td>
+      </tr>`;
+    }).join('') || '<tr><td colspan="11">Sin resultados</td></tr>';
+  }
+
+  // RN-WEB-013: recepción única; suma existencias y registra movimientos
+  function recibirPedido(id) {
+    const p = DB.get('pedido', id);
+    if (p.estado === 'Recibido') return alert('RN-WEB-013: este pedido ya fue recibido.');
+    if (p.estado !== 'Enviado') return alert('RN-WEB-014: solo se puede recibir un pedido enviado.');
+
+    const lineas = DB.all('detalle_pedido').filter(d => DB.same(d.id_pedido, id));
+    const fecha = DB.ahora();
+
+    DB.save('producto', DB.all('producto').map(pr => {
+      const entrada = lineas.filter(d => DB.same(d.id_producto, pr.id_producto)).reduce((a, d) => a + d.cantidad, 0);
+      return entrada ? { ...pr, stock: pr.stock + entrada } : pr;
+    }));
+    lineas.forEach(d => DB.add('movimiento_inventario', {
+      id_producto: d.id_producto, id_usuario: s.id_usuario, tipo: 'Entrada',
+      cantidad: d.cantidad, fecha, motivo: `Recepción pedido ${id}`
+    }));
+    DB.update('pedido', id, { estado: 'Recibido', fecha_recepcion: fecha });
+  }
+
+  $('form-ped').addEventListener('submit', e => {
+    e.preventDefault();
+    const prov = DB.get('proveedor', $('prov').value);
+    const prod = DB.get('producto', $('prod').value);
+    const cant = parseInt($('cant').value, 10);
+    const costo = parseFloat($('costo').value);
+
+    if (!prov || !prov.estado) return alert('RN-WEB-017: selecciona un proveedor activo.');
+    if (!prod || !prod.estado) return alert('Selecciona un producto activo.');
+    if (!(cant > 0)) return alert('RN-WEB-024: la cantidad debe ser mayor a cero.');
+    if (isNaN(costo) || costo < 0) return alert('RN-WEB-024: el costo unitario no puede ser negativo.');
+
+    const pedido = DB.add('pedido', {
+      id_proveedor: prov.id_proveedor, id_usuario: s.id_usuario, fecha_solicitud: DB.ahora(),
+      fecha_entrega_esperada: $('entrega').value || null, fecha_recepcion: null, estado: 'Creado'
+    });
+    DB.add('detalle_pedido', { id_pedido: pedido.id_pedido, id_producto: prod.id_producto, cantidad: cant, costo_unitario: costo });
+
+    e.target.reset();
+    llenarSelects();
+    pintar();
+  });
+
+  $('prod').addEventListener('change', () => {
+    const p = DB.get('producto', $('prod').value);
+    if (p) $('costo').value = p.costo;
+  });
+
+  $('tb').addEventListener('click', e => {
+    const enviar = e.target.dataset.enviar;
+    const recibir = e.target.dataset.recibir;
+
+    if (enviar) {
+      const p = DB.get('pedido', enviar);
+      if (p.estado !== 'Creado') return alert('RN-WEB-014: transición no permitida.');
+      DB.update('pedido', enviar, { estado: 'Enviado' });
+    }
+    if (recibir) recibirPedido(recibir);
+    pintar();
+  });
+
+  $('btn-cancelar').onclick = () => $('form-ped').reset();
+  $('buscar').addEventListener('input', pintar);
+
+  llenarSelects();
+  pintar();
+</script>
+</body>
+</html>

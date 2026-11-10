@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Weirdo Comics - Usuarios</title>
+  <link rel="stylesheet" href="funcional.css">
+</head>
+<body>
+<div id="top"></div>
+<div class="layout">
+  <nav id="nav"></nav>
+
+  <main class="contenido">
+    <h2>Administración de Usuarios</h2>
+
+    <form class="nuevo" id="form-usr">
+      <h3 id="titulo-form">Nuevo Usuario</h3>
+      <div class="grid-form">
+        <div class="campo">
+          <label for="nombre">Nombre completo</label>
+          <input id="nombre" placeholder="Nombre completo">
+        </div>
+        <div class="campo">
+          <label for="correo">Correo electrónico</label>
+          <input type="email" id="correo" placeholder="usuario@weirdo.com">
+        </div>
+        <div class="campo">
+          <label for="telefono">Teléfono (opcional)</label>
+          <input id="telefono" placeholder="5550000000">
+        </div>
+        <div class="campo">
+          <label for="rol">Rol</label>
+          <select id="rol"></select>
+        </div>
+        <div class="campo">
+          <label for="pass">Contraseña temporal</label>
+          <input type="password" id="pass" placeholder="Mínimo 8 caracteres">
+        </div>
+        <div class="campo">
+          <label for="pass2">Confirmar contraseña</label>
+          <input type="password" id="pass2" placeholder="Repetir contraseña">
+        </div>
+      </div>
+      <p class="nota" id="nota-pass">La contraseña será temporal: el usuario deberá cambiarla al entrar.</p>
+      <div class="acciones-form">
+        <button type="submit" class="btn" id="btn-guardar">Crear Usuario</button>
+        <button type="button" class="btn btn-secundario" id="btn-cancelar">Cancelar</button>
+      </div>
+    </form>
+
+    <div class="buscador">
+      <input id="buscar" placeholder="Buscar por nombre, correo o rol...">
+    </div>
+
+    <div class="tabla-scroll">
+      <table>
+        <thead>
+          <tr><th>ID</th><th>Nombre</th><th>Correo</th><th>Rol</th><th>Último acceso</th><th>Estado</th><th>Acciones</th></tr>
+        </thead>
+        <tbody id="tb"></tbody>
+      </table>
+    </div>
+  </main>
+</div>
+
+<script src="db.js"></script>
+<script>
+  const s = DB.requerirSesion('usuarios.html');
+  DB.layout('usuarios.html', s);
+  const $ = id => document.getElementById(id);
+  let editId = null;
+
+  function llenarRoles() {
+    $('rol').innerHTML = DB.all('rol').map(r => `<option value="${r.id_rol}">${DB.esc(r.nombre)}</option>`).join('');
+  }
+
+  function resetForm() {
+    $('form-usr').reset();
+    editId = null;
+    $('titulo-form').textContent = 'Nuevo Usuario';
+    $('btn-guardar').textContent = 'Crear Usuario';
+    $('pass').disabled = false;
+    $('pass2').disabled = false;
+    $('nota-pass').textContent = 'La contraseña será temporal: el usuario deberá cambiarla al entrar.';
+  }
+
+  function pintar() {
+    const q = $('buscar').value.toLowerCase();
+    const lista = DB.all('usuario').filter(u =>
+      [u.nombre, u.correo, DB.nombreRol(u.id_rol)].some(v => String(v).toLowerCase().includes(q)));
+    $('tb').innerHTML = lista.map(u => `
+      <tr>
+        <td>${u.id_usuario}</td><td>${DB.esc(u.nombre)}</td><td>${DB.esc(u.correo)}</td>
+        <td>${DB.esc(DB.nombreRol(u.id_rol))}</td>
+        <td>${u.ultimo_acceso || 'Nunca'}</td>
+        <td><span class="estado ${u.estado ? '' : 'gris'}">${u.estado ? 'Activo' : 'Inactivo'}</span>
+          ${u.requiere_cambio_clave ? '<span class="estado warn">Clave temporal</span>' : ''}</td>
+        <td>
+          <button class="btn-editar" data-editar="${u.id_usuario}">Editar</button>
+          <button class="btn-eliminar" data-toggle="${u.id_usuario}">${u.estado ? 'Desactivar' : 'Activar'}</button>
+        </td>
+      </tr>`).join('') || '<tr><td colspan="7">Sin resultados</td></tr>';
+  }
+
+  $('form-usr').addEventListener('submit', async e => {
+    e.preventDefault();
+    const v = {
+      nombre: $('nombre').value.trim(),
+      correo: $('correo').value.trim(),
+      telefono: $('telefono').value.trim() || null,
+      id_rol: Number($('rol').value)
+    };
+    if (!v.nombre || !v.correo || !v.id_rol) return alert('Completa los campos obligatorios.');
+    if (!DB.correoValido(v.correo)) return alert('El correo no tiene un formato válido.');
+    if (v.telefono && !DB.telefonoValido(v.telefono)) return alert('El teléfono no tiene un formato válido.');
+
+    // RN-WEB-001: correo único
+    const otro = u => editId === null || !DB.same(u.id_usuario, editId);
+    if (DB.all('usuario').some(u => u.correo.toLowerCase() === v.correo.toLowerCase() && otro(u)))
+      return alert('RN-WEB-001: ya existe un usuario con ese correo.');
+
+    if (editId) {
+      DB.update('usuario', editId, v);
+    } else {
+      const clave = $('pass').value;
+      // RN-WEB-002: mínimo 8 caracteres y hash
+      if (clave.length < 8) return alert('RN-WEB-002: la contraseña debe tener mínimo 8 caracteres.');
+      if (clave !== $('pass2').value) return alert('Las contraseñas no coinciden.');
+      // RN-WEB-004: contraseña temporal obligatoria
+      DB.add('usuario', { ...v, contrasena: await DB.hashClave(clave), requiere_cambio_clave: true, estado: true, ultimo_acceso: null });
+    }
+    resetForm();
+    pintar();
+  });
+
+  $('tb').addEventListener('click', e => {
+    const idEditar = e.target.dataset.editar;
+    const idToggle = e.target.dataset.toggle;
+
+    if (idEditar) {
+      const u = DB.get('usuario', idEditar);
+      editId = idEditar;
+      $('nombre').value = u.nombre;
+      $('correo').value = u.correo;
+      $('telefono').value = u.telefono || '';
+      $('rol').value = u.id_rol;
+      $('pass').value = '';
+      $('pass2').value = '';
+      $('pass').disabled = true;
+      $('pass2').disabled = true;
+      $('titulo-form').textContent = 'Editar Usuario';
+      $('btn-guardar').textContent = 'Actualizar Usuario';
+      $('nota-pass').textContent = 'La contraseña no se modifica desde esta pantalla.';
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    // RN-WEB-003: baja lógica
+    if (idToggle) {
+      const u = DB.get('usuario', idToggle);
+      if (DB.same(u.id_usuario, s.id_usuario)) return alert('No puedes desactivar tu propio usuario.');
+      DB.update('usuario', idToggle, { estado: !u.estado });
+      pintar();
+    }
+  });
+
+  $('btn-cancelar').onclick = resetForm;
+  $('buscar').addEventListener('input', pintar);
+
+  llenarRoles();
+  resetForm();
+  pintar();
+</script>
+</body>
+</html>
